@@ -8,6 +8,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
 import java.util.List;
 
 public class Main {
@@ -23,10 +24,21 @@ public class Main {
         Main main = new Main();
 
         String token = main.authenticate();
-        ClimateFieldViewCredentials climateFieldViewCredentials =   main.createCFVCredentials();
-        main.createLeafUser(climateFieldViewCredentials);
 
-        for(Operation operation : main.getStandardGeoJSON(token)) {
+        ClimateFieldViewCredentials climateFieldViewCredentials  = main.authenticateWithCFV();
+        climateFieldViewCredentials =   main.createCFVCredentials(climateFieldViewCredentials, token);
+        LeafUser leafUser = main.createLeafUser(token, climateFieldViewCredentials);
+        String leafUserId=leafUser.getId();
+
+        List<String> ids = new ArrayList<>();
+
+        for(Operation operation : main.getOperations(token, leafUserId)) {
+            ids.add(operation.getId());
+        }
+
+        main.mergeOperations(token, ids);
+
+        for(Operation operation : main.getOperations(token, leafUserId)) {
 
             Image [] images = main.getImages(token, operation.getId());
 
@@ -34,9 +46,10 @@ public class Main {
                 System.out.println(image.getUrl());
             }
         }
+
     }
 
-    private ClimateFieldViewCredentials createCFVCredentials() throws IOException, InterruptedException {
+    private ClimateFieldViewCredentials authenticateWithCFV(){
 
         ClimateFieldViewCredentials climateFieldViewCredentials = new ClimateFieldViewCredentials();
         climateFieldViewCredentials.setApiKey("");
@@ -44,8 +57,14 @@ public class Main {
         climateFieldViewCredentials.setClientId("");
         climateFieldViewCredentials.setClientSecret("");
 
+        return climateFieldViewCredentials;
+    }
+
+    private ClimateFieldViewCredentials createCFVCredentials(ClimateFieldViewCredentials climateFieldViewCredentials, String token) throws IOException, InterruptedException {
+
         HttpRequest request = HttpRequest.newBuilder(URI.create(api+"/services/usermanagement/api/climate-field-view-credentials"))
             .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer "+token)
             .POST(HttpRequest.BodyPublishers.ofString((new Gson()).toJson(climateFieldViewCredentials))).build();
 
         HttpResponse<String> response = client.send(request,HttpResponse.BodyHandlers.ofString());
@@ -53,31 +72,57 @@ public class Main {
         return (new Gson()).fromJson(response.body(), ClimateFieldViewCredentials.class);
     }
 
-    private String createLeafUser(ClimateFieldViewCredentials climateFieldViewCredentials) throws IOException, InterruptedException {
+    private LeafUser createLeafUser(String token, ClimateFieldViewCredentials climateFieldViewCredentials) throws IOException, InterruptedException {
 
         LeafUser leafUser = new LeafUser();
         leafUser.setEmail("testeste@test.com");
+        leafUser.setName("name");
         leafUser.setClimateFieldViewCredentials(climateFieldViewCredentials);
 
         HttpRequest request = HttpRequest.newBuilder(URI.create(api+"/services/usermanagement/api/users"))
             .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer "+token)
             .POST(HttpRequest.BodyPublishers.ofString((new Gson()).toJson(leafUser))).build();
 
         HttpResponse<String> response = client.send(request,HttpResponse.BodyHandlers.ofString());
 
-        return (new Gson()).fromJson(response.body(), Token.class).getId_token();
+        return (new Gson()).fromJson(response.body(), LeafUser.class);
     }
 
-    private List<Operation> getStandardGeoJSON(String token) throws IOException, InterruptedException {
+    private List<Operation> getOperations(String token, String leafUserId) throws IOException, InterruptedException {
 
-        HttpRequest request = HttpRequest.newBuilder(URI.create(api+"/services/operations/api/files?page=0&size=3&status=processed"))
+        Operations operations;
+
+        do{
+            Thread.sleep(100000);
+
+            HttpRequest request = HttpRequest.newBuilder(URI.create(api+"/services/operations/api/files?operationType=harvested&provider=ClimateFieldView&leafUserId="+leafUserId))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer "+token)
+                .GET().build();
+
+            HttpResponse<String> response = client.send(request,HttpResponse.BodyHandlers.ofString());
+
+             operations = (new Gson()).fromJson(response.body(), Operations.class);
+
+        }while (operations.getOperations().size()==0);
+
+        return operations.getOperations();
+    }
+
+    private Operation mergeOperations(String token, List<String> ids) throws IOException, InterruptedException {
+
+        Merge merge = new Merge();
+        merge.setIds(ids);
+
+        HttpRequest request = HttpRequest.newBuilder(URI.create(api+"/services/operations/api/files/merge"))
             .header("Content-Type", "application/json")
             .header("Authorization", "Bearer "+token)
-            .GET().build();
+            .POST(HttpRequest.BodyPublishers.ofString((new Gson()).toJson(merge))).build();
 
         HttpResponse<String> response = client.send(request,HttpResponse.BodyHandlers.ofString());
 
-        return (new Gson()).fromJson(response.body(), Operations.class).getOperations();
+        return (new Gson()).fromJson(response.body(), Operation.class);
     }
 
     private Image[] getImages(String token, String id) throws IOException, InterruptedException {
